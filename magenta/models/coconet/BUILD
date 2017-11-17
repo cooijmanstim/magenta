@@ -122,7 +122,7 @@ py_binary(
       ":lib_util",
       ":lib_graph",
       ":lib_hparams",
-      "//magenta",
+      "//magenta/models/coconet",
         # tensorflow dep
     ],
 )
