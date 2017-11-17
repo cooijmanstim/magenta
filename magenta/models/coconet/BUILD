@@ -122,6 +122,7 @@ py_binary(
       ":lib_util",
       ":lib_graph",
       ":lib_hparams",
+      "//magenta",
         # tensorflow dep
     ],
 )
