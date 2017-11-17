@@ -8,10 +8,10 @@ import os
 import numpy as np
 import tensorflow as tf
 
-import lib.evaluation
-import lib.graph
-import lib.data
-import lib.util
+import lib_evaluation
+import lib_graph
+import lib_data
+import lib_util
 
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('data_dir', None,
@@ -24,11 +24,11 @@ tf.app.flags.DEFINE_bool('chronological', False, 'indicates evaluation should pr
 tf.app.flags.DEFINE_string('checkpoint', None, 'path to checkpoint file')
 
 def main(argv):
-  wmodel = lib.graph.load_checkpoint(FLAGS.checkpoint)
+  wmodel = lib_graph.load_checkpoint(FLAGS.checkpoint)
 
-  evaluator = lib.evaluation.BaseEvaluator.make(FLAGS.unit, wmodel=wmodel,
+  evaluator = lib_evaluation.BaseEvaluator.make(FLAGS.unit, wmodel=wmodel,
                                                 chronological=FLAGS.chronological)
-  evaluator = lib.evaluation.EnsemblingEvaluator(evaluator, FLAGS.ensemble_size)
+  evaluator = lib_evaluation.EnsemblingEvaluator(evaluator, FLAGS.ensemble_size)
 
   # tf.app.flags parses known flags but passes unknown flags on. unfortunately
   # this gives us no way to tell whether the leftovers were meant to be flags
@@ -52,26 +52,40 @@ def main(argv):
 
 def evaluate_fold(fold, evaluator, hparams):
   name = "eval_%s_%s%s_%s_ensemble%s_chrono%s" % (
-    lib.util.timestamp(), fold, FLAGS.fold_index if FLAGS.fold_index is not None else "",
+    lib_util.timestamp(), fold, FLAGS.fold_index if FLAGS.fold_index is not None else "",
     FLAGS.unit, FLAGS.ensemble_size, FLAGS.chronological)
   save_path = "%s__%s" % (FLAGS.checkpoint, name)
 
   pianorolls = get_fold_pianorolls(fold, hparams)
-  rval = lib.evaluation.evaluate(evaluator, pianorolls)
+
+  if False: # inspect data
+    for pianoroll in pianorolls:
+      min_pitch = pianoroll.argmax(axis=1).min()
+      max_pitch = pianoroll.argmax(axis=1).max()
+      pianoroll = pianoroll[:, min_pitch:max_pitch+1]
+      T, P, I = pianoroll.shape
+      lines = [[" " for _ in range(T)] for _ in range(P)]
+      for t, p, i in np.transpose(np.nonzero(pianoroll)):
+        lines[p][t] = "SATB"[i]
+      print("yay:")
+      print("\n".join("".join(line) for line in reversed(lines)))
+      input()
+
+  rval = lib_evaluation.evaluate(evaluator, pianorolls)
   np.savez_compressed("%s.npz" % save_path, **rval)
 
 def evaluate_paths(paths, evaluator, hparams):
   for path in paths:
     name = "eval_%s_%s_ensemble%s_chrono%s" % (
-      lib.util.timestamp(), FLAGS.unit, FLAGS.ensemble_size, FLAGS.chronological)
+      lib_util.timestamp(), FLAGS.unit, FLAGS.ensemble_size, FLAGS.chronological)
     save_path = "%s__%s" % (path, name)
 
     pianorolls = get_path_pianorolls(path)
-    rval = lib.evaluation.evaluate(evaluator, pianorolls)
+    rval = lib_evaluation.evaluate(evaluator, pianorolls)
     np.savez_compressed("%s.npz" % save_path, **rval)
 
 def get_fold_pianorolls(fold, hparams):
-  dataset = lib.data.get_dataset(FLAGS.data_dir, hparams, fold)
+  dataset = lib_data.get_dataset(FLAGS.data_dir, hparams, fold)
   pianorolls = dataset.get_pianorolls()
   print('\nRetrieving pianorolls from %s set of %s dataset.\n' % (
       fold, hparams.dataset))
