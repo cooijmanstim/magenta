@@ -118,11 +118,10 @@ py_binary(
         "testdata/Jsb16thSeparated.npz",
     ],
     deps = [
-      "//magenta/models/coconet:lib_data",
+      ":lib_data",
       ":lib_util",
       ":lib_graph",
       ":lib_hparams",
-      "//magenta/models/coconet",
         # tensorflow dep
     ],
 )
