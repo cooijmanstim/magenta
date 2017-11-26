@@ -1,4 +1,4 @@
-"""Classes for sampling and subroutines."""
+"""Classes and subroutines for generating pianorolls from coconet."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -16,10 +16,22 @@ from magenta.models.coconet import lib_logging
 ################
 ### Samplers ###
 ################
-# Composable strategies for filling in a masked-out block
 
 class BaseSampler(lib_util.Factory):
-  def __init__(self, wmodel, temperature=1, logger=None, **kwargs):
+  """Base class for samplers.
+
+  Samplers are callables that take pianorolls and masks and fill in the
+  masked-out portion of the pianorolls.
+  """
+
+  def __init__(self, wmodel, temperature=1, logger=None, **unused_kwargs):
+    """Initialize a BaseSampler instance.
+
+    Args:
+      wmodel: a WrappedModel instance
+      temperature: sampling temperature
+      logger: Logger instance
+    """
     self.wmodel = wmodel
     self.temperature = temperature
     self.logger = logger if logger is not None else lib_logging.NoLogger()
@@ -36,6 +48,7 @@ class BaseSampler(lib_util.Factory):
     return self.wmodel.hparams.separate_instruments
 
   def sample_predictions(self, predictions, temperature=None):
+    """Sample from model outputs."""
     temperature = self.temperature if temperature is None else temperature
     if self.separate_instruments:
       return lib_util.sample(predictions, axis=2, onehot=True,
@@ -49,19 +62,31 @@ class BaseSampler(lib_util.Factory):
     return "samplers.%s" % cls.key
 
   def __call__(self, pianorolls, masks):
+    """Sample from model.
+
+    Args:
+      pianorolls: pianorolls to populate
+      masks: binary indicator of area to populate
+
+    Returns:
+      Populated pianorolls.
+    """
     label = "%s_sampler" % self.key
     with lib_util.timing(label):
-      return self.run_nonverbose(pianorolls, masks)
+      return self._run_nonverbose(pianorolls, masks)
 
-  def run_nonverbose(self, pianorolls, masks):
+  def _run_nonverbose(self, pianorolls, masks):
     label = "%s_sampler" % self.key
     with self.logger.section(label):
-      return self.run(pianorolls, masks)
+      return self._run(pianorolls, masks)
 
 class BachSampler(BaseSampler):
+  """Takes Bach chorales from the validation set."""
   key = "bach"
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
+    if not np.all(masks):
+      raise NotImplementedError()
     print("Loading validation pieces from %s..." % self.wmodel.hparams.dataset)
     dataset = lib_data.get_dataset(FLAGS.data_dir, self.wmodel.hparams, 'valid')
     bach_pianorolls = dataset.get_pianorolls()
@@ -71,17 +96,21 @@ class BachSampler(BaseSampler):
     return pianorolls
 
 class ZeroSampler(BaseSampler):
+  """Populates the pianorolls with zeros."""
   key = "zero"
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
+    if not np.all(masks):
+      raise NotImplementedError()
     pianorolls = 0 * pianorolls
     self.logger.log(pianorolls=pianorolls, masks=masks, predictions=pianorolls)
     return pianorolls
 
 class UniformRandomSampler(BaseSampler):
+  """Populates the pianorolls with uniform random notes."""
   key = "uniform"
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
     predictions = np.ones(pianorolls.shape)
     samples = self.sample_predictions(predictions, temperature=1)
     assert (samples * masks).sum() == masks.max(axis=2).sum()
@@ -90,9 +119,10 @@ class UniformRandomSampler(BaseSampler):
     return pianorolls
 
 class IndependentSampler(BaseSampler):
+  """Samples all variables independently based on a single model evaluation."""
   key = "independent"
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
     predictions = self.predictor(pianorolls, masks)
     samples = self.sample_predictions(predictions)
     assert (samples * masks).sum() == masks.max(axis=2).sum()
@@ -101,13 +131,20 @@ class IndependentSampler(BaseSampler):
     return pianorolls
 
 class AncestralSampler(BaseSampler):
+  """Samples variables sequentially like NADE."""
   key = "ancestral"
 
   def __init__(self, **kwargs):
+    """Initialize an AncestralSampler instance.
+
+    Args:
+      selector: an instance of BaseSelector; determines the causal order in
+          which variables are to be sampled.
+    """
     self.selector = kwargs.pop("selector")
     super(AncestralSampler, self).__init__(**kwargs)
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
     B, T, P, I = pianorolls.shape
     assert self.separate_instruments or I == 1
 
@@ -130,16 +167,26 @@ class AncestralSampler(BaseSampler):
     return pianorolls
 
 class GibbsSampler(BaseSampler):
+  """Repeatedly resamples subsets of variables using an inner sampler."""
   key = "gibbs"
 
   def __init__(self, **kwargs):
+    """Initialize a GibbsSampler instance.
+
+    Args:
+      masker: an instance of BaseMasker; controls how subsets are chosen.
+      sampler: an instance of BaseSampler; invoked to resample subsets.
+      schedule: an instance of BaseSchedule; determines the subset size.
+      num_steps: number of gibbs steps to perform. If not given, defaults to
+          the number of masked-out variables.
+    """
     self.masker = kwargs.pop("masker")
     self.sampler = kwargs.pop("sampler")
     self.schedule = kwargs.pop("schedule")
     self.num_steps = kwargs.pop("num_steps", None)
     super(GibbsSampler, self).__init__(**kwargs)
 
-  def run(self, pianorolls, masks):
+  def _run(self, pianorolls, masks):
     B, T, P, I = pianorolls.shape
     print('shape', pianorolls.shape)
     num_steps = (np.max(_numbers_of_masked_variables(masks))
@@ -152,7 +199,7 @@ class GibbsSampler(BaseSampler):
           pm = self.schedule(s, num_steps)
           inner_masks = self.masker(pianorolls.shape, pm=pm, outer_masks=masks,
                                     separate_instruments=self.separate_instruments)
-          pianorolls = self.sampler.run_nonverbose(pianorolls, inner_masks)
+          pianorolls = self.sampler._run_nonverbose(pianorolls, inner_masks)
           if self.separate_instruments:
             # ensure the sampler did actually sample everything under inner_masks
             assert np.all(np.where(inner_masks.max(axis=2),
@@ -167,6 +214,7 @@ class GibbsSampler(BaseSampler):
     return "samplers.gibbs(masker=%r, sampler=%r)" % (self.masker, self.sampler)
 
 class UpsamplingSampler(BaseSampler):
+  """Alternates temporal upsampling and populating the gaps."""
   key = "upsampling"
 
   def __init__(self, **kwargs):
@@ -174,7 +222,7 @@ class UpsamplingSampler(BaseSampler):
     self.desired_length = kwargs.pop("desired_length")
     super(UpsamplingSampler, self).__init__(**kwargs)
 
-  def run(self, pianorolls, masks=1.):
+  def _run(self, pianorolls, masks=1.):
     if not np.all(masks):
       raise NotImplementedError()
     masks = np.ones_like(pianorolls)
@@ -198,17 +246,42 @@ class UpsamplingSampler(BaseSampler):
 ###############
 ### Maskers ###
 ###############
-# Strategies for generating masks (possibly within masks).
 
 class BaseMasker(lib_util.Factory):
+  """Base class for maskers."""
   @classmethod
   def __repr__(cls, self):
     return "maskers.%s" % cls.key
 
+  def __call__(self, shape, outer_masks=1., separate_instruments=True):
+    """Sample a batch of masks.
+
+    Args:
+      shape: sequence of length 4 specifying desired shape of the mask
+      outer_masks: indicator of area within which to mask out
+      separate_instruments: whether instruments are separated
+
+    Returns:
+      A batch of masks.
+    """
+    raise NotImplementedError()
+
 class BernoulliMasker(BaseMasker):
+  """Samples each element iid from a Bernoulli distribution."""
   key = "bernoulli"
 
   def __call__(self, shape, pm=None, outer_masks=1., separate_instruments=True):
+    """Sample a batch of masks.
+
+    Args:
+      shape: sequence of length 4 specifying desired shape of the mask
+      pm: Bernoulli success probability
+      outer_masks: indicator of area within which to mask out
+      separate_instruments: whether instruments are separated
+
+    Returns:
+      A batch of masks.
+    """
     assert pm is not None
     B, T, P, I = shape
     if separate_instruments:
@@ -220,6 +293,7 @@ class BernoulliMasker(BaseMasker):
     return masks * outer_masks
 
 class HarmonizationMasker(BaseMasker):
+  """Masks out all instruments except Soprano."""
   key = "harmonization"
 
   def __call__(self, shape, outer_masks=1., separate_instruments=True):
@@ -230,6 +304,7 @@ class HarmonizationMasker(BaseMasker):
     return masks * outer_masks
 
 class TransitionMasker(BaseMasker):
+  """Masks out the temporal middle half of the pianorolls."""
   key = "transition"
 
   def __call__(self, shape, outer_masks=1., separate_instruments=True):
@@ -242,9 +317,15 @@ class TransitionMasker(BaseMasker):
     return masks * outer_masks
 
 class InstrumentMasker(BaseMasker):
+  """Masks out a specific instrument."""
   key = "instrument"
 
   def __init__(self, instrument):
+    """Initialize an InstrumentMasker instance.
+
+    Args:
+      instrument: index of instrument to mask out (S,A,T,B == 0,1,2,3)
+    """
     self.instrument = instrument
 
   def __call__(self, shape, outer_masks=1., separate_instruments=True):
@@ -257,9 +338,16 @@ class InstrumentMasker(BaseMasker):
 #################
 ### Schedules ###
 #################
-# Used to anneal GibbsSampler.
 
-class YaoSchedule(object):
+class BaseSchedule(object):
+  """Base class for Gibbs block size annealing schedule."""
+  pass
+
+class YaoSchedule(BaseSchedule):
+  """Truncated linear annealing schedule.
+
+  Please see Yao et al, https://arxiv.org/abs/1409.0585 for details."""
+
   def __init__(self, pmin=0.1, pmax=0.9, alpha=0.7):
     self.pmin = pmin
     self.pmax = pmax
@@ -273,7 +361,9 @@ class YaoSchedule(object):
     return ("YaoSchedule(pmin=%r, pmax=%r, alpha=%r)"
             % (self.pmin, self.pmax, self.alpha))
 
-class ConstantSchedule(object):
+class ConstantSchedule(BaseSchedule):
+  """Constant schedule."""
+
   def __init__(self, p):
     self.p = p
 
@@ -287,11 +377,26 @@ class ConstantSchedule(object):
 #################
 ### Selectors ###
 #################
-# Used in ancestral sampling to determine which variable to sample next.
+
 class BaseSelector(lib_util.Factory):
-  pass
+  """Base class for next variable selection in AncestralSampler."""
+
+  def __call__(self, predictions, masks, separate_instruments=True):
+    """Select the next variable to sample.
+
+    Args:
+      predictions: model outputs
+      masks: masks within which to sample
+      separate_instruments: whether instruments are separated
+
+    Returns:
+      mask indicating which variable to sample next
+    """
+    raise NotImplementedError()
 
 class ChronologicalSelector(BaseSelector):
+  """Selects variables in chronological order."""
+
   key = "chronological"
 
   def __call__(self, predictions, masks, separate_instruments=True):
@@ -311,6 +416,8 @@ class ChronologicalSelector(BaseSelector):
     return selection * masks
 
 class OrderlessSelector(BaseSelector):
+  """Selects variables in random order."""
+
   key = "orderless"
 
   def __call__(self, predictions, masks, separate_instruments=True):

@@ -38,28 +38,41 @@ def print_mask(mask):
   print("\n".join("".join(str({True: 1, False: 0}[z]) for z in y) for y in mask))
 
 
-class MaskoutMethod(lib_util.Factory):
-  pass
-
-
 def get_mask(maskout_method, *args, **kwargs):
   mm = MaskoutMethod.make(maskout_method)
   return mm(*args, **kwargs)
 
 
+class MaskoutMethod(lib_util.Factory):
+  """Base class for mask distributions used during training."""
+  pass
+
+
 class BernoulliMaskoutMethod(MaskoutMethod):
+  """Iid Bernoulli masking distribution."""
+
   key = "bernoulli"
 
-  def __call__(self, pianoroll_shape, separate_instruments=True,
-               blankout_ratio=0.5, **kwargs):
-    if len(pianoroll_shape) != 3:
+  def __call__(self, shape, separate_instruments=True,
+               blankout_ratio=0.5, **unused_kwargs):
+    """Sample a mask.
+
+    Args:
+      shape: shape of pianoroll (time, pitch, instrument)
+      separate_instruments: whether instruments are separated
+      blankout_ratio: bernoulli inclusion probability
+
+    Returns:
+      A mask of shape `shape`.
+    """
+    if len(shape) != 3:
       raise ValueError(
-          'Shape needs to of 3 dimensional, time, pitch, and instrument.')
-    T, P, I = pianoroll_shape
+          'Shape needs to be 3 dimensional: time, pitch, and instrument.')
+    T, P, I = shape
     if separate_instruments:
       mask = np.random.random([T, 1, I]) < blankout_ratio
       mask = mask.astype(np.float32)
-      mask = np.tile(mask, [1, pianoroll_shape[1], 1])
+      mask = np.tile(mask, [1, shape[1], 1])
     else:
       mask = np.random.random([T, P, I]) < blankout_ratio
       mask = mask.astype(np.float32)
@@ -67,10 +80,21 @@ class BernoulliMaskoutMethod(MaskoutMethod):
 
 
 class OrderlessMaskoutMethod(MaskoutMethod):
+  """Masking distribution for orderless nade training."""
+
   key = "orderless"
 
-  def __call__(self, pianoroll_shape, separate_instruments=True, **kwargs):
-    T, P, I = pianoroll_shape
+  def __call__(self, shape, separate_instruments=True, **unused_kwargs):
+    """Sample a mask.
+
+    Args:
+      shape: shape of pianoroll (time, pitch, instrument)
+      separate_instruments: whether instruments are separated
+
+    Returns:
+      A mask of shape `shape`.
+    """
+    T, P, I = shape
 
     if separate_instruments:
       d = T * I
